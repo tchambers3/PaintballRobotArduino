@@ -1,23 +1,7 @@
-//#include <config.h>
-//#include <coolant_control.h>
-//#include <cpu_map.h>
-//#include <defaults.h>
-//#include <eeprom.h>
-//#include <limits.h>
-//#include <motion_control.h>
-//#include <nuts_bolts.h>
-//#include <planner.h>
-//#include <print.h>
-//#include <probe.h>
-//#include <protocol.h>
-//#include <report.h>
-//#include <serial.h>
-//#include <settings.h>
-//#include <spindle_control.h>
-//#include <stepper.h>
-//#include <system.h>
-
+#include <AccelStepper.h>
+#include <MultiStepper.h>
 #include <QueueArray.h>
+#include <Servo.h>
 
 
 
@@ -74,6 +58,9 @@
 
 // Interval in milliseconds between input samples.
 static unsigned int hardware_polling_interval = 50; // 20 Hz samples to start
+static unsigned int sol_polling_interval = 1000;
+static unsigned long last_timeSol = 0;
+unsigned long nowSol = millis();
 
 // Create a hobby servo control signal generator.
 //static Servo servo_output;
@@ -95,18 +82,27 @@ struct Coordinates {
   int x;
   int y;
 };
+#define ENABLE 8
 
-static const int solPin = 12;
-static const int stepEnable = 8;
+const int solPin = 12;
+const int debugLed = 13;
 
 static const int xStepPin = 2;
 static const int xDirPin = 5;
 
 static const int yStepPin = 3;
 static const int yDirPin = 6;
+// Define some steppers and the pins the will use
+AccelStepper stepperX(AccelStepper::DRIVER, xStepPin, xDirPin);
+AccelStepper stepperY(AccelStepper::DRIVER, yStepPin, yDirPin);
+Servo triggerServo;
+int triggerPos = 0;
+int triggerSpeed = 10;
 
-static const int yStepPin = 10;
 QueueArray <Coordinates> shotsQueue;
+
+bool reached = false;
+
 int triggerState = LOW;
 int next_step_outputX = HIGH;
 unsigned long step_intervalX = 100000.0;
@@ -127,7 +123,7 @@ bool movingY = false;
 bool reachedY = false;
 bool lastShot = false;
 
-Coordinates current = {-1,-1};
+Coordinates current = {1,1};
 
 
 /****************************************************************/
@@ -281,16 +277,9 @@ static void parse_input_message(int argc, char *argv[])
       return;
 
     } else if( string_equal(command, "paint")) {
-      Serial.write(x);
+      Serial.write(y);
       Coordinates incoming = {x, y};
       shotsQueue.enqueue(incoming);
-//      pinMode( solPin, OUTPUT );
-//      pinMode(xStepPin, OUTPUT);
-//      digitalWrite(solPin, HIGH);
-//      digitalWrite(xStepPin, HIGH);
-//      delay(50);
-//      digitalWrite(xStepPin, LOW);
-//      digitalWrite(solPin, LOW); 
     }
 
     // Process the 'svo' command to generate a hobby-servo PWM signal on a particular pin.
@@ -379,6 +368,20 @@ static void serial_input_poll(void)
   }
 }
 
+
+static void moveToNewCurrent(void) {
+  triggerPos = 90;
+  triggerServo.write(90);
+  reached = false;
+  current = shotsQueue.dequeue();
+  Serial.write(shotsQueue.count());
+//  stepperX.moveTo(current.x);
+  stepperX.moveTo(-stepperX.currentPosition());
+  stepperY.moveTo(current.y);
+  Coordinates coord = {10, 10};
+  shotsQueue.enqueue(coord);
+}
+
 /****************************************************************/
 /// Polling function to read and send specific input values at periodic
 /// intervals.
@@ -390,140 +393,38 @@ static void hardware_input_poll(void)
   static unsigned long last_time = 0;
   unsigned long now = millis();
   unsigned long interval = now - last_time;
+  unsigned long intervalSol = nowSol - last_timeSol;
   if (interval > hardware_polling_interval) {
     last_time = now;
     if(!shotsQueue.isEmpty() ) {
       if(current.x == -1 && current.y == -1) {
-        current = shotsQueue.dequeue();
+        moveToNewCurrent();
       }
-      digitalWrite(LED_BUILTIN, HIGH);
-      set_stepper_speedX(5e-15);
-      update_stepperX(interval);
-      set_stepper_speedY(5e-15);
-      update_stepperY(interval);
-
-      if(triggerState == HIGH && reachedX && reachedY) {
-          reachedX = false;
-          reachedY = false;
-          current = shotsQueue.dequeue();
-          if(current.x < currentPositionX) directionX = -1;
-          else directionX = 1;
-          if(current.y < currentPositionY) directionY = -1;
-          else directionY = 1;
-          delay(100);
-          Serial.write(56);
-          Serial.write(current.x);
-          Serial.write(shotsQueue.count());
-          triggerState = LOW;
-        } else if(triggerState == LOW && reachedX && reachedY) {
-          triggerState = HIGH;
-        } else {
-          triggerState = LOW;
+      if(stepperX.distanceToGo() == 0 && stepperY.distanceToGo() == 0) {
+//      if(stepperX.distanceToGo() == 0) {
+        if(reached == false) {
+           nowSol = millis();
+           last_timeSol = nowSol;
         }
-        digitalWrite(solPin, triggerState);
-
-    }
-  }
-}
-
-
-void update_stepperX (unsigned long interval)
-{
-  if (steppingX) {
-    // test whether to sample the input
-    step_timerX -= interval;
-  
-    if (step_timerX <= 0 && !reachedX) {
-      currentPositionX += directionX;
-      Serial.write(currentPositionX);
-      // Reset the timer for the next sampling period.  Adding in the value helps
-      // maintain precise timing in the presence of variation in the polling time,
-      // e.g. if this sampling point was a little late, the next one will occur a
-      // little sooner, maintaining the overall average.
-      step_timerX += step_intervalX;
-//      digitalWrite(stepPin, next_step_output);
-      digitalWrite(xStepPin, next_step_outputX);
-      if(currentPositionX == current.x) {
-        movingX = false;
-        reachedX = true;
-        digitalWrite(xStepPin, LOW);
-        Serial.write(69);
-      } else {
-
-      // toggle the pin state for the next cycle
-      if (next_step_outputX == HIGH) next_step_outputX = LOW;
-      else                          next_step_outputX = HIGH;
+        reached = true;
       }
+
+      // Might need to change the order of the solPin write if the motors are moving before solenoid is triggered
+      if(reached) {
+        triggerPos = 135;
+        triggerServo.write(triggerPos);
+        intervalSol = last_timeSol - nowSol;
+        last_timeSol = millis();
+        if(intervalSol > sol_polling_interval ) {
+            last_timeSol = nowSol;
+            moveToNewCurrent();
+        }
+      } 
     }
   }
 }
 
-void update_stepperY (unsigned long interval)
-{
-  if (steppingY) {
-    // test whether to sample the input
-    step_timerY -= interval;
-  
-    if (step_timerY <= 0 && !reachedY) {
-//      Serial.write(current.y);
-      currentPositionY += directionY;
-      // Reset the timer for the next sampling period.  Adding in the value helps
-      // maintain precise timing in the presence of variation in the polling time,
-      // e.g. if this sampling point was a little late, the next one will occur a
-      // little sooner, maintaining the overall average.
-      step_timerY += step_intervalY;
-//      digitalWrite(stepPin, next_step_output);
-      digitalWrite(yStepPin, next_step_outputY);
-      if(currentPositionY == current.y) {
-        movingY = false;
-        reachedY = true;
-        digitalWrite(yStepPin,LOW);
-      } else {
 
-      // toggle the pin state for the next cycle
-      if (next_step_outputY == HIGH) next_step_outputY = LOW;
-      else                          next_step_outputY = HIGH;
-      }
-    }
-  }
-}
-
-void set_stepper_speedX(float steps_per_second)
-{
-  // For simplicity of the code, the STEP output is a square wave, so two cycles
-  // will produce one motor driver step.  This computes the appropriate
-  // half-cycle interval in microseconds.
-
-  if (steps_per_second <= 0.0) {
-    // avoid dividing by zero
-    steppingX = false;
-  } else {  
-    step_intervalX = (unsigned long) (500000.0 / steps_per_second);
-    steppingX = true;
-
-    // reset the timer to shorten the current half-cycle to avoid problems when speeding up
-    if (step_timerX > step_intervalX) step_timerX = step_intervalX;
-  }
-}
-
-
-void set_stepper_speedY(float steps_per_second)
-{
-  // For simplicity of the code, the STEP output is a square wave, so two cycles
-  // will produce one motor driver step.  This computes the appropriate
-  // half-cycle interval in microseconds.
-
-  if (steps_per_second <= 0.0) {
-    // avoid dividing by zero
-    steppingY = false;
-  } else {  
-    step_intervalY = (unsigned long) (500000.0 / steps_per_second);
-    steppingY = true;
-
-    // reset the timer to shorten the current half-cycle to avoid problems when speeding up
-    if (step_timerY > step_intervalY) step_timerY = step_intervalY;
-  }
-}
 
 void setup() {
         Serial.begin(9600);     // opens serial port, sets data rate to 9600 bps
@@ -531,14 +432,31 @@ void setup() {
         pinMode(solPin, OUTPUT);
         Serial.setTimeout(10); // set the timeout for parseInt
         shotsQueue.setPrinter (Serial);
-        pinMode( yStepPin, OUTPUT );
-        pinMode(xStepPin, OUTPUT);
-        pinMode(stepEnable, OUTPUT);
+        stepperX.setMaxSpeed(10000.0);
+        stepperX.setAcceleration(700.0);
+        stepperX.moveTo(1200);
+        Coordinates coord = {10, 10};
+        shotsQueue.enqueue(coord);
+        
+        stepperY.setMaxSpeed(10000.0);
+        stepperY.setAcceleration(700.0);
+
+        triggerServo.attach(12);
+    
+        pinMode(ENABLE,OUTPUT);
+        digitalWrite(ENABLE,LOW);
         pinMode(LED_BUILTIN, OUTPUT);
-        digitalWrite(stepEnable, LOW);
+        pinMode(debugLed, OUTPUT);
+
+         digitalWrite(LED_BUILTIN, HIGH);
+         delay(100);
+          digitalWrite(LED_BUILTIN, LOW);
 }
 
 void loop() {
   serial_input_poll();
+  stepperX.run();
+  stepperY.run();
   hardware_input_poll();
+
 }
