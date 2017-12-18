@@ -93,8 +93,8 @@ static const int xDirPin = 5;
 static const int yStepPin = 3;
 static const int yDirPin = 6;
 // Define some steppers and the pins the will use
-AccelStepper stepperX(AccelStepper::DRIVER, xStepPin, xDirPin);
-AccelStepper stepperY(AccelStepper::DRIVER, yStepPin, yDirPin);
+AccelStepper stepperY(AccelStepper::DRIVER, xStepPin, xDirPin);
+AccelStepper stepperX(AccelStepper::DRIVER, yStepPin, yDirPin);
 Servo triggerServo;
 int triggerPos = 0;
 int triggerSpeed = 10;
@@ -123,7 +123,7 @@ bool movingY = false;
 bool reachedY = false;
 bool lastShot = false;
 
-Coordinates current = {1,1};
+Coordinates current = {-1,-1};
 
 
 /****************************************************************/
@@ -277,9 +277,11 @@ static void parse_input_message(int argc, char *argv[])
       return;
 
     } else if( string_equal(command, "paint")) {
-      Serial.write(y);
-      Coordinates incoming = {x, y};
-      shotsQueue.enqueue(incoming);
+//      Serial.write(y);
+      if(shotsQueue.count() <= 30) {
+        Coordinates incoming = {x, y};
+        shotsQueue.enqueue(incoming);
+      }
     }
 
     // Process the 'svo' command to generate a hobby-servo PWM signal on a particular pin.
@@ -374,12 +376,9 @@ static void moveToNewCurrent(void) {
   triggerServo.write(90);
   reached = false;
   current = shotsQueue.dequeue();
-  Serial.write(shotsQueue.count());
-//  stepperX.moveTo(current.x);
-  stepperX.moveTo(-stepperX.currentPosition());
+//  Serial.write(shotsQueue.count());
+  stepperX.moveTo(current.x);
   stepperY.moveTo(current.y);
-  Coordinates coord = {10, 10};
-  shotsQueue.enqueue(coord);
 }
 
 /****************************************************************/
@@ -401,7 +400,6 @@ static void hardware_input_poll(void)
         moveToNewCurrent();
       }
       if(stepperX.distanceToGo() == 0 && stepperY.distanceToGo() == 0) {
-//      if(stepperX.distanceToGo() == 0) {
         if(reached == false) {
            nowSol = millis();
            last_timeSol = nowSol;
@@ -416,10 +414,13 @@ static void hardware_input_poll(void)
         intervalSol = last_timeSol - nowSol;
         last_timeSol = millis();
         if(intervalSol > sol_polling_interval ) {
+          Serial.write(67);
             last_timeSol = nowSol;
             moveToNewCurrent();
         }
       } 
+    } else {
+      Serial.write(69);
     }
   }
 }
@@ -432,25 +433,19 @@ void setup() {
         pinMode(solPin, OUTPUT);
         Serial.setTimeout(10); // set the timeout for parseInt
         shotsQueue.setPrinter (Serial);
-        stepperX.setMaxSpeed(10000.0);
-        stepperX.setAcceleration(700.0);
-        stepperX.moveTo(1200);
-        Coordinates coord = {10, 10};
-        shotsQueue.enqueue(coord);
+        stepperX.setMaxSpeed(200.0);
+        stepperX.setSpeed(200);
+        stepperX.setAcceleration(100.0);
         
-        stepperY.setMaxSpeed(10000.0);
-        stepperY.setAcceleration(700.0);
+        stepperY.setMaxSpeed(200.0);
+        stepperY.setSpeed(200);
+        stepperY.setAcceleration(80.0);
 
         triggerServo.attach(12);
     
         pinMode(ENABLE,OUTPUT);
         digitalWrite(ENABLE,LOW);
         pinMode(LED_BUILTIN, OUTPUT);
-        pinMode(debugLed, OUTPUT);
-
-         digitalWrite(LED_BUILTIN, HIGH);
-         delay(100);
-          digitalWrite(LED_BUILTIN, LOW);
 }
 
 void loop() {
